@@ -55,7 +55,7 @@ Exploratory: [class distribution](results/figures/class_distribution.png) · [PC
 ## Usage
 
 ```bash
-git clone https://github.com/<your-username>/gene-panel-diagnostic-classifier.git
+git clone https://github.com/slama-bit/gene-panel-diagnostic-classifier.git
 cd gene-panel-diagnostic-classifier
 pip install -r requirements.txt
 
