@@ -1,0 +1,23 @@
+== 1. Replicate structure ==
+class 0: 10 arrays from 5 independent groups
+class 1: 81 arrays from 81 independent groups
+class-0 arrays per group: {'0591N': 3, '0934N': 3, '0932N': 2, '0469N': 1, '0562N': 1}
+
+== 2. Leakage in original split (seed 42, 30% test, forced sample) ==
+class-0 test arrays: ['0932N', '0591N', '0591N']
+of which share a patient with training: 3/3
+
+== 3. CV AUC, curated panel (CatBoost, default params) ==
+sample-level : 0.988 ± 0.025
+patient-group: 1.000 ± 0.000
+
+== 4. Random 29-gene panels (n=30), patient-grouped CV ==
+random panels: mean 0.981, median 0.992, min 0.920, max 1.000
+fraction of random panels with AUC >= curated (1.000): 0.23
+
+== 5. Single-gene grouped-CV AUC ==
+SLC16A4  0.953
+BAX      0.940
+ENO1     0.814
+PKM      0.853
+SNAI1    0.894

@@ -15,12 +15,14 @@ Usage:
 
 import argparse
 import os
+import re
 from datetime import datetime
 
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import seaborn as sns
 import shap
@@ -34,7 +36,12 @@ from sklearn.metrics import (
     roc_auc_score,
     roc_curve,
 )
-from sklearn.model_selection import cross_val_score, train_test_split
+from sklearn.model_selection import (
+    StratifiedGroupKFold,
+    StratifiedKFold,
+    cross_val_score,
+    train_test_split,
+)
 from skopt import BayesSearchCV
 from skopt.space import Integer, Real
 from tqdm import tqdm
@@ -59,7 +66,7 @@ TARGET_GENES = [
 
 class DiagnosticModel:
     def __init__(self, expression_matrix, labels, model_type="catboost",
-                 n_iter=60, seed=42, outdir="results", n_jobs=-1):
+                 n_iter=60, seed=42, outdir="results", n_jobs=-1, groups=None):
         self.available_genes = [g for g in TARGET_GENES if g in expression_matrix.columns]
         if len(self.available_genes) < 5:
             raise ValueError("Too few target genes found in expression matrix.")
@@ -74,6 +81,9 @@ class DiagnosticModel:
 
         self.X = expression_matrix[self.available_genes]
         self.y = labels.values.ravel()
+        # Optional patient/group IDs: replicates of one patient never span train/test
+        self.groups = None if groups is None else np.asarray(groups)
+        self.groups_train = None
 
         if model_type == "catboost":
             self.model = CatBoostClassifier(iterations=150, verbose=0, random_seed=seed)
@@ -86,8 +96,23 @@ class DiagnosticModel:
 
     # ------------------------------------------------------------------ split
     def preprocess(self, test_size=0.3, sample_to_train=""):
-        """Stratified train/test split. Optionally force one sample into training."""
-        if sample_to_train and sample_to_train in self.X.index:
+        """Stratified train/test split. Optionally force one sample into training.
+
+        If groups were given, a stratified *group* split is used instead, so all
+        arrays from one patient land on the same side (sample_to_train is ignored).
+        """
+        if self.groups is not None:
+            if sample_to_train:
+                print("Note: --sample-to-train ignored in grouped mode.")
+            n_splits = max(2, round(1 / test_size))
+            sgkf = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=self.seed)
+            tr, te = next(sgkf.split(self.X, self.y, self.groups))
+            self.X_train, self.X_test = self.X.iloc[tr], self.X.iloc[te]
+            self.y_train, self.y_test = self.y[tr], self.y[te]
+            self.groups_train = self.groups[tr]
+            print(f"Grouped split: {len(set(self.groups[tr]))} train groups / "
+                  f"{len(set(self.groups[te]))} test groups, no overlap.")
+        elif sample_to_train and sample_to_train in self.X.index:
             mask = self.X.index == sample_to_train
             X_rest, y_rest = self.X.loc[~mask], self.y[~mask]
             X_tr, self.X_test, y_tr, self.y_test = train_test_split(
@@ -131,17 +156,23 @@ class DiagnosticModel:
             search_spaces=space,
             n_iter=self.n_iter,
             scoring="roc_auc",
-            cv=5,
+            cv=self._cv(),
             n_jobs=self.n_jobs,
             random_state=self.seed,
             optimizer_kwargs={"n_initial_points": min(20, self.n_iter)},
             verbose=0,
         )
-        search.fit(self.X_train, self.y_train, callback=[lambda _: pbar.update(1)])
+        search.fit(self.X_train, self.y_train, groups=self.groups_train,
+                   callback=[lambda _: pbar.update(1)])
         pbar.close()
         self.model = search.best_estimator_
         self.best_params = dict(search.best_params_)
         print(f"Best {self.model_type.upper()} params: {self.best_params}")
+
+    def _cv(self, k=5):
+        if self.groups is not None:
+            return StratifiedGroupKFold(n_splits=k, shuffle=True, random_state=self.seed)
+        return StratifiedKFold(n_splits=k, shuffle=True, random_state=self.seed)
 
     # ------------------------------------------------------------------ train
     def train(self, tune=True):
@@ -179,7 +210,8 @@ class DiagnosticModel:
         self._plot_cm(y_pred)
 
     def cross_validate(self, cv=5):
-        scores = cross_val_score(self.model, self.X, self.y, cv=cv, scoring="roc_auc")
+        scores = cross_val_score(self.model, self.X, self.y, cv=self._cv(cv),
+                                 groups=self.groups, scoring="roc_auc")
         self.cv_scores = scores
         print(f"\nCV AUC (k={cv}): {scores.mean():.3f} ± {scores.std():.3f}  folds={scores.round(3)}")
 
@@ -281,6 +313,10 @@ def main():
     ap.add_argument("--no-tune", action="store_true")
     ap.add_argument("--n-jobs", type=int, default=-1,
                     help="Parallel jobs for the search (-1 = all cores; use 1 if workers crash)")
+    ap.add_argument("--group-pattern", default="",
+                    help="Regex whose first capture group in the sample ID defines the "
+                         "patient/group, e.g. 'JZN_(\\d+[NT])' for GSE62232. Enables "
+                         "leakage-free grouped split and CV.")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--sample-to-train", default="",
                     help="Sample ID to force into the training set (optional)")
@@ -289,10 +325,17 @@ def main():
     os.makedirs(args.outdir, exist_ok=True)
     expr, labels = load_data(args.expression, args.labels)
 
+    groups = None
+    if args.group_pattern:
+        pat = re.compile(args.group_pattern, re.IGNORECASE)
+        groups = [pat.search(s).group(1).upper() for s in expr.index]
+        print(f"Grouping {len(groups)} samples into {len(set(groups))} groups.")
+
     summary = {}
     for mt in args.models:
         m = DiagnosticModel(expr, labels, model_type=mt, n_iter=args.n_iter,
-                            seed=args.seed, outdir=args.outdir, n_jobs=args.n_jobs)
+                            seed=args.seed, outdir=args.outdir, n_jobs=args.n_jobs,
+                            groups=groups)
         m.run_full_pipeline(tune=not args.no_tune, sample_to_train=args.sample_to_train.upper())
         m.classify_new_samples(expr).to_csv(
             os.path.join(args.outdir, f"{mt}_predictions.csv"), index=False)

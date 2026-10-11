@@ -1,0 +1,10 @@
+# Diagnostic Model Summary (CATBOOST)
+
+Timestamp: 2026-10-11 22:48:51
+Test AUC: 1.000
+CV AUC: 1.000 ± 0.000
+Samples: 91
+Best params: {'bagging_temperature': 1.1151559382799707, 'depth': 8, 'l2_leaf_reg': 8.567773934012717, 'learning_rate': 0.02069186296126172}
+Genes (29): CDH1, CDH2, SNAI1, SNAI2, VIM, ACTA2, TP53, BAX, BCL2, CASP3, CDKN1A, COX11, ATP6V1H, NDUFAF5, NDUFA10, ESRRA, PKM, TPI1, LDHA, ENO1, SLC16A1, SLC16A4, MKI67, TERT, TOP1, MYC, FGFR1, CCL2, CXCL8
+
+Files: catboost_predictions.csv, catboost_model.cbm

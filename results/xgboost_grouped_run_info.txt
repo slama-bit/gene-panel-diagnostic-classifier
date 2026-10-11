@@ -1,0 +1,10 @@
+# Diagnostic Model Summary (XGBOOST)
+
+Timestamp: 2026-10-11 22:48:52
+Test AUC: 0.951
+CV AUC: 0.996 ± 0.008
+Samples: 91
+Best params: {'colsample_bytree': 0.7640415835413256, 'learning_rate': 0.0534226888747111, 'max_depth': 9, 'reg_lambda': 2.0691862961261718, 'subsample': 0.8680591793075738}
+Genes (29): CDH1, CDH2, SNAI1, SNAI2, VIM, ACTA2, TP53, BAX, BCL2, CASP3, CDKN1A, COX11, ATP6V1H, NDUFAF5, NDUFA10, ESRRA, PKM, TPI1, LDHA, ENO1, SLC16A1, SLC16A4, MKI67, TERT, TOP1, MYC, FGFR1, CCL2, CXCL8
+
+Files: xgboost_predictions.csv, xgboost_model.json

@@ -1,16 +1,18 @@
-# Gene-Panel Diagnostic Classifier
+# Gene-Panel Diagnostic Classifier: HCC vs Non-Tumor Liver
 
-Binary classification of transcriptomic samples using a curated **29-gene panel** covering EMT, apoptosis, glycolysis/OXPHOS, lactate transport, proliferation and inflammation. Two gradient-boosting models (**CatBoost** and **XGBoost**) are tuned with Bayesian optimisation and interpreted with **SHAP**.
+This project classifies **hepatocellular carcinoma (HCC) vs non-tumor liver** from microarray expression data. It uses a curated **29-gene panel** covering EMT, apoptosis, glycolysis/OXPHOS, lactate transport, proliferation and inflammation. Two gradient-boosting models, **CatBoost** and **XGBoost**, are tuned with Bayesian optimisation and interpreted with **SHAP**. Every result is evaluated with **patient-grouped** splits, so replicate arrays from the same patient never appear in both training and test sets.
+
+**Dataset:** [GEO GSE62232](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE62232), Affymetrix HG-U133 Plus 2.0. It has 81 HCC arrays (label 1) and 10 non-tumor liver arrays (label 0). The 10 non-tumor arrays come from **5 patients only**.
 
 ## Pipeline
 
-1. **Load and align**: expression matrix (samples × genes) and labels are matched on normalised sample IDs.
-2. **Feature selection**: the expression matrix is restricted to the predefined gene panel. Genes are chosen from prior knowledge, not from the data.
-3. **Split**: stratified 70/30 train/test split. One sample can optionally be forced into the training set.
-4. **Tune**: `BayesSearchCV` with 5-fold CV and ROC-AUC scoring, run on the training set only.
-5. **Evaluate**: classification report, ROC, precision-recall curve and confusion matrix on the held-out test set, plus 5-fold CV AUC.
-6. **Explain**: SHAP mean |value| ranking on the training set.
-7. **Export**: per-sample predictions, saved models, gene-importance tables and a run summary.
+1. **Load and align**: the expression matrix (samples × genes) and the labels are matched on normalised sample IDs.
+2. **Feature selection**: the matrix is restricted to the predefined gene panel. The genes come from prior knowledge, not from the data.
+3. **Split**: a stratified **group** split (`--group-pattern`) keeps all arrays from one patient on one side of the split.
+4. **Tune**: `BayesSearchCV` with grouped 5-fold CV and ROC-AUC scoring, run on the training set only.
+5. **Evaluate**: classification report, ROC, precision-recall and confusion matrix on the held-out patients, plus grouped 5-fold CV AUC.
+6. **Explain**: SHAP mean |value| ranking.
+7. **Robustness**: `src/robustness_checks.py` measures replicate leakage and compares the panel against random gene panels.
 
 ### Gene panel
 
@@ -26,14 +28,16 @@ Binary classification of transcriptomic samples using a curated **29-gene panel*
 
 ## Results
 
-The dataset has 91 samples (10 class-0, 81 class-1). The test set has 27 samples: 3 class-0 and 24 class-1.
+These results come from a patient-grouped split with 60 Bayesian tuning iterations. The test set holds 28 patients (30 arrays): 27 HCC arrays and 3 non-tumor arrays. All 3 non-tumor arrays come from **one** patient (0934N).
 
-| Model | Test AUC | Class-0 recall | Class-1 recall | 5-fold CV AUC |
+| Model | Test AUC | Non-tumor recall @0.5 | HCC recall | Grouped 5-fold CV AUC |
 |---|---|---|---|---|
-| CatBoost | 1.000 | 0.67 (2/3) | 1.00 | 0.994 ± 0.013 |
-| XGBoost  | 1.000 | 0.67 (2/3) | 1.00 | 0.981 ± 0.025 |
+| CatBoost | 1.000 | 0.67 (2/3) | 1.00 | 1.000 ± 0.000 |
+| XGBoost  | 0.951 | 0.00 (0/3) | 1.00 | 0.996 ± 0.008 |
 
-**Top genes, consistent across both models:** SLC16A4, BAX, ENO1, PKM and SNAI1. These combine lactate transport, glycolysis, apoptosis and EMT.
+**Top genes in both models:** BAX, SLC16A4 and SNAI1, followed by glycolytic genes (PKM, TPI1, ENO1).
+
+The ranking is good, but the default 0.5 threshold misclassifies non-tumor tissue. XGBoost scores every array of the held-out non-tumor patient above 0.5. This comes from the 81:10 class imbalance, so the threshold and class weights need calibrating.
 
 | | CatBoost | XGBoost |
 |---|---|---|
@@ -41,16 +45,29 @@ The dataset has 91 samples (10 class-0, 81 class-1). The test set has 27 samples
 | Confusion | ![](results/figures/catboost_confusion.png) | ![](results/figures/xgboost_confusion.png) |
 | SHAP | ![](results/figures/catboost_shap.png) | ![](results/figures/xgboost_shap.png) |
 
-Exploratory: [class distribution](results/figures/class_distribution.png) · [PCA variance](results/figures/pca_variance.png)
+Exploratory plots: [class distribution](results/figures/class_distribution.png) · [PCA variance](results/figures/pca_variance.png)
+
+### Robustness checks
+
+Full output is in [`results/robustness_summary.txt`](results/robustness_summary.txt).
+
+| Check | Result |
+|---|---|
+| Independent non-tumor patients | **5** (10 arrays: 3 + 3 + 2 + 1 + 1) |
+| Original Colab split: non-tumor test arrays whose patient was also in training | **3 / 3** (leakage) |
+| Curated panel, grouped CV AUC | 1.000 |
+| **Random 29-gene panels** (n = 30), grouped CV AUC | mean 0.981, median 0.992; 23 % reach 1.000 |
+| Single genes, grouped CV AUC | SLC16A4 0.953 · BAX 0.940 · SNAI1 0.894 · PKM 0.853 · ENO1 0.814 |
+
+**What these checks show.** HCC and non-tumor liver are very easy to separate with this data: random gene sets reach near-perfect AUC. The curated panel works, but these results do **not** show that it is specifically informative. AUC alone cannot tell it apart from random genes on this dataset.
 
 ## Limitations
 
-- **Severe class imbalance (10 vs 81).** The test set has only 3 minority samples, so a single misclassification moves class-0 recall by 33 points. Treat the AUC = 1.0 as an optimistic estimate rather than a stable performance figure.
-- **Small sample size.** With n = 91, the CV folds hold about 2 minority samples each, so CV AUC has high variance.
-- **Hyperparameters were tuned on the training split, then cross-validated on the full dataset.** This CV estimate is mildly optimistic. Nested CV would give an unbiased estimate.
-- **Forced training sample.** The reported run fixed one sample in the training set (`--sample-to-train`). This changes the split. Report results with and without it.
-- **No external validation cohort.** Predictions in `*_predictions.csv` include the training samples.
-- No class weighting or threshold tuning has been applied yet. `scale_pos_weight` or `auto_class_weights="Balanced"` are natural next steps.
+- **There are only 5 independent non-tumor patients.** Every minority-class estimate rests on 1–2 patients per fold. Sample-level metrics overstate the effective sample size.
+- **The original Colab run (now archived) leaked replicates.** Arrays from the same patient sat in both train and test, and one replicate (GSM1523338, 0934N) was forced into training. Those figures are kept in [`results/figures/original_colab_run/`](results/figures/original_colab_run/) for transparency only.
+- **The default threshold is wrong for 81:10 imbalance.** Use class weights (`auto_class_weights="Balanced"`, `scale_pos_weight`) or choose a threshold with grouped CV.
+- **CV after tuning is mildly optimistic.** Nested grouped CV would give an unbiased estimate.
+- **There is no external cohort.** The next step is validation on an independent HCC dataset, such as TCGA-LIHC or another GEO series. A harder clinical question, such as HCC vs cirrhosis or early vs late stage, would test whether the panel adds value over random genes.
 
 ## Usage
 
@@ -60,20 +77,22 @@ cd gene-panel-diagnostic-classifier
 pip install -r requirements.txt
 
 # put expression_matrix.csv and labels.csv in data/ (see data/README.md)
-python src/diagnostic_model.py \
-    --expression data/expression_matrix.csv \
-    --labels data/labels.csv \
-    --outdir results \
-    --n-iter 60
+
+# main pipeline, leakage-free
+python src/diagnostic_model.py --group-pattern 'JZN_(\d+[NT])' --n-iter 60
+
+# robustness checks
+python src/robustness_checks.py --n-random 30
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
+| `--group-pattern` | none | Regex whose first capture group defines the patient. Enables grouped split and CV. **Recommended.** |
 | `--models` | `catboost xgboost` | Which models to run |
 | `--n-iter` | 60 | Bayesian search iterations |
-| `--no-tune` | off | Skip tuning and use default hyperparameters |
+| `--no-tune` | off | Skip tuning |
 | `--n-jobs` | -1 | Parallel workers for the search. Use `1` if workers crash. |
-| `--sample-to-train` | none | Force a sample ID into the training set |
+| `--sample-to-train` | none | Force a sample into training (ungrouped mode only; kept to reproduce the original run) |
 | `--seed` | 42 | Random seed |
 
 The original Colab analysis, with its outputs, is in [`notebooks/diagnostic_model.ipynb`](notebooks/diagnostic_model.ipynb).
@@ -81,10 +100,15 @@ The original Colab analysis, with its outputs, is in [`notebooks/diagnostic_mode
 ## Repository layout
 
 ```
-├── src/diagnostic_model.py     # reusable pipeline (CLI)
-├── notebooks/                  # original Colab notebook with outputs
-├── results/figures/            # figures from the reported run
-├── data/                       # input data (not tracked)
+├── src/
+│   ├── diagnostic_model.py       # pipeline (CLI)
+│   └── robustness_checks.py      # leakage + random-panel baseline
+├── notebooks/                    # original Colab notebook
+├── results/
+│   ├── robustness_summary.txt
+│   ├── *_grouped_run_info.txt
+│   └── figures/                  # grouped run; original_colab_run/ archived
+├── data/                         # input data (not tracked, see data/README.md)
 └── requirements.txt
 ```
 
